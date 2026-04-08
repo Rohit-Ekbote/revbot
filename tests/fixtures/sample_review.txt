@@ -1,0 +1,39 @@
+FINDING_START
+ID: 1
+SEVERITY: BLOCKER
+FILE: src/auth.py
+LINE: 42
+TITLE: SQL injection in login query
+BODY: The `username` parameter is interpolated directly into the SQL query string without parameterization. Use parameterized queries to prevent SQL injection.
+FINDING_END
+
+FINDING_START
+ID: 2
+SEVERITY: WARNING
+FILE: src/auth.py
+LINE: 58
+TITLE: Missing rate limiting on login endpoint
+BODY: The login endpoint has no rate limiting, allowing brute-force attacks. Add rate limiting middleware or per-IP throttling.
+FINDING_END
+
+FINDING_START
+ID: 3
+SEVERITY: SUGGESTION
+FILE: src/utils.py
+LINE: 10
+TITLE: Use pathlib instead of os.path
+BODY: Modern Python prefers pathlib.Path over os.path for path manipulation. This improves readability and type safety.
+FINDING_END
+
+FINDING_START
+ID: 4
+SEVERITY: NIT
+FILE: GENERAL
+LINE: 0
+TITLE: Inconsistent docstring style
+BODY: Some functions use Google-style docstrings while others use NumPy-style. Pick one and apply consistently.
+FINDING_END
+
+SUMMARY_START
+This PR introduces authentication middleware with a critical SQL injection vulnerability that must be fixed before merge. The overall approach is sound but needs security hardening and rate limiting before it is production-ready.
+SUMMARY_END

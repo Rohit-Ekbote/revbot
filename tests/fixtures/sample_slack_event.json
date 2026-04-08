@@ -1,0 +1,15 @@
+{
+  "token": "verification_token",
+  "team_id": "T01234567",
+  "event": {
+    "type": "message",
+    "channel": "C01234567",
+    "user": "U01234567",
+    "text": "apply 1,3",
+    "ts": "1712345678.000100",
+    "thread_ts": "1712345600.000001"
+  },
+  "type": "event_callback",
+  "event_id": "Ev01234567",
+  "event_time": 1712345678
+}
