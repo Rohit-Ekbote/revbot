@@ -18,9 +18,17 @@ def verify_slack_signature(
     signing_secret: str,
 ) -> bool:
     """Verify Slack request signature (HMAC-SHA256)."""
-    if abs(time.time() - int(timestamp)) > MAX_TIMESTAMP_AGE:
+    try:
+        ts = int(timestamp)
+    except (ValueError, TypeError):
         return False
-    base = f"v0:{timestamp}:{body.decode()}"
+    if abs(time.time() - ts) > MAX_TIMESTAMP_AGE:
+        return False
+    try:
+        body_str = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    base = f"v0:{timestamp}:{body_str}"
     expected = "v0=" + hmac.new(
         signing_secret.encode(), base.encode(), hashlib.sha256
     ).hexdigest()

@@ -12,11 +12,10 @@ from slack import SlackClient, verify_slack_signature
 
 
 @pytest.fixture
-def slack_client(settings) -> SlackClient:
-    return SlackClient(
-        bot_token=settings.slack_bot_token,
-        channel=settings.slack_channel,
-    )
+async def slack_client(settings):
+    client = SlackClient(bot_token=settings.slack_bot_token, channel=settings.slack_channel)
+    yield client
+    await client.close()
 
 
 class TestVerifySlackSignature:
