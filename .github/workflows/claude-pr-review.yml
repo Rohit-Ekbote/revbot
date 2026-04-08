@@ -1,0 +1,209 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    name: Claude Review
+    runs-on: ubuntu-latest
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch PR metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.number }}"
+
+          # Get PR title and body
+          gh pr view "$PR_NUM" --json title,body --jq '.title' > /tmp/pr_title.txt
+          gh pr view "$PR_NUM" --json title,body --jq '.body // ""' > /tmp/pr_body.txt
+          gh pr view "$PR_NUM" --json author --jq '.author.login' > /tmp/pr_author.txt
+
+          # Get diff
+          gh pr diff "$PR_NUM" > /tmp/pr_diff.txt
+
+          # Get changed file paths and detect stacks
+          gh pr view "$PR_NUM" --json files --jq '.files[].path' > /tmp/changed_files.txt
+
+          STACKS=""
+          if grep -q '^go/' /tmp/changed_files.txt 2>/dev/null; then
+            STACKS="$STACKS go"
+          fi
+          if grep -q '^backend-services-2/' /tmp/changed_files.txt 2>/dev/null; then
+            STACKS="$STACKS fastapi"
+          fi
+          if grep -q '^backend-services/' /tmp/changed_files.txt 2>/dev/null; then
+            STACKS="$STACKS django"
+          fi
+          STACKS=$(echo "$STACKS" | xargs)  # trim
+
+          echo "stacks=$STACKS" >> "$GITHUB_OUTPUT"
+          echo "Detected stacks: $STACKS"
+
+      - name: Build skill context
+        run: |
+          # Always load root skill
+          SKILL_FILE=".claude/skills/code-review.md"
+          if [ -f "$SKILL_FILE" ]; then
+            cat "$SKILL_FILE" > /tmp/combined_skill.md
+            echo -e "\n---\n" >> /tmp/combined_skill.md
+          else
+            echo "No root skill file found at $SKILL_FILE" > /tmp/combined_skill.md
+            echo -e "\n---\n" >> /tmp/combined_skill.md
+          fi
+
+          # Append stack-specific skills
+          STACKS="${{ steps.meta.outputs.stacks }}"
+          for stack in $STACKS; do
+            case "$stack" in
+              go)
+                STACK_SKILL="go/.claude/skills/code-review.md"
+                ;;
+              fastapi)
+                STACK_SKILL="backend-services-2/.claude/skills/code-review.md"
+                ;;
+              django)
+                STACK_SKILL="backend-services/.claude/skills/code-review.md"
+                ;;
+              *)
+                continue
+                ;;
+            esac
+            if [ -f "$STACK_SKILL" ]; then
+              echo "## Stack: $stack" >> /tmp/combined_skill.md
+              cat "$STACK_SKILL" >> /tmp/combined_skill.md
+              echo -e "\n---\n" >> /tmp/combined_skill.md
+            fi
+          done
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Invoke Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Build the prompt from files
+          PROMPT="$(cat /tmp/combined_skill.md)
+
+          ---
+
+          ## PR Context
+          Title: $(cat /tmp/pr_title.txt)
+          Description: $(cat /tmp/pr_body.txt)
+
+          ## Diff
+          $(cat /tmp/pr_diff.txt)
+
+          ---
+
+          ## Instructions
+          Perform a structured review. For each finding output EXACTLY this format
+          (do not deviate — it will be parsed programmatically):
+
+          FINDING_START
+          ID: <number starting from 1>
+          SEVERITY: <BLOCKER|WARNING|SUGGESTION|NIT>
+          FILE: <file path or GENERAL if not file-specific>
+          LINE: <line number or 0 if not applicable>
+          TITLE: <one line summary>
+          BODY: <detailed explanation, can be multiline>
+          FINDING_END
+
+          After all findings, add:
+          SUMMARY_START
+          <2-3 sentence overall assessment>
+          SUMMARY_END
+
+          Do not add any text outside of FINDING_START/END and SUMMARY_START/END blocks."
+
+          claude --print "$PROMPT" > /tmp/raw_review.txt
+
+      - name: Store hidden findings on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.number }}"
+          RUN_ID="${{ github.run_id }}"
+
+          # JSON-encode the raw review text
+          JSON_RAW=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" < /tmp/raw_review.txt)
+
+          COMMENT_BODY=$(cat <<EOF
+          <!-- claude-review-data
+          {"pr": ${PR_NUM}, "run_id": "${RUN_ID}", "raw": ${JSON_RAW}}
+          -->
+          EOF
+          )
+
+          gh pr comment "$PR_NUM" --body "$COMMENT_BODY"
+
+      - name: Notify local service
+        env:
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          LOCAL_SERVICE_URL: ${{ vars.LOCAL_SERVICE_URL }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.number }}"
+          STACKS="${{ steps.meta.outputs.stacks }}"
+          RUN_ID="${{ github.run_id }}"
+          REPO="${{ github.repository }}"
+          PR_URL="https://github.com/${REPO}/pull/${PR_NUM}"
+
+          # Build JSON payload
+          PAYLOAD=$(python3 -c "
+          import json
+          print(json.dumps({
+              'pr_number': int('${PR_NUM}'),
+              'pr_title': open('/tmp/pr_title.txt').read().strip(),
+              'pr_url': '${PR_URL}',
+              'pr_author': open('/tmp/pr_author.txt').read().strip(),
+              'stacks': '${STACKS}',
+              'run_id': '${RUN_ID}',
+              'raw_review': open('/tmp/raw_review.txt').read(),
+              'repo': '${REPO}',
+          }))
+          ")
+
+          # Compute HMAC signature
+          SIG=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
+
+          # POST to local service
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: $SIG" \
+            -d "$PAYLOAD" \
+            "${LOCAL_SERVICE_URL}/review-complete" \
+            || echo "Warning: Could not reach local service at ${LOCAL_SERVICE_URL}"
