@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class Finding:
     id: int
     severity: str  # BLOCKER | WARNING | SUGGESTION | NIT
@@ -28,8 +28,7 @@ _FINDING_RE = re.compile(
     r"FILE:\s*(?P<file>.+?)\s*\n"
     r"LINE:\s*(?P<line>\d+)\s*\n"
     r"TITLE:\s*(?P<title>.+?)\s*\n"
-    r"BODY:\s*(?P<body>.*?)\s*\n"
-    r"FINDING_END",
+    r"BODY:\s*(?P<body>.*?)\s*(?=FINDING_END)",
     re.DOTALL,
 )
 

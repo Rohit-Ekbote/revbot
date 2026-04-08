@@ -48,6 +48,27 @@ def test_parse_review_no_summary():
     assert summary == ""
 
 
+def test_parse_review_multiline_body():
+    text = (
+        "FINDING_START\n"
+        "ID: 1\n"
+        "SEVERITY: WARNING\n"
+        "FILE: src/api.py\n"
+        "LINE: 25\n"
+        "TITLE: Missing error handling\n"
+        "BODY: The endpoint lacks error handling.\n"
+        "\n"
+        "Consider adding:\n"
+        "- Try/except around the DB call\n"
+        "- Proper HTTP error responses\n"
+        "FINDING_END\n"
+    )
+    findings, summary = parse_review(text)
+    assert len(findings) == 1
+    assert "Try/except" in findings[0].body
+    assert "HTTP error responses" in findings[0].body
+
+
 def test_format_slack_blocks_contains_findings(sample_review_text: str):
     findings, summary = parse_review(sample_review_text)
     blocks = format_slack_blocks(
