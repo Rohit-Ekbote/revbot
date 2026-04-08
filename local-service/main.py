@@ -43,7 +43,10 @@ async def review_complete(request: Request, background_tasks: BackgroundTasks):
         logger.warning("review_complete_auth_failed")
         return Response(status_code=401, content="Unauthorized")
 
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return Response(status_code=400, content="Invalid JSON")
     logger.info("review_complete_received", pr=payload["pr_number"])
 
     findings, summary = parse_review(payload["raw_review"])
@@ -87,11 +90,17 @@ async def _auto_apply(payload: dict, findings: list[Finding]):
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return Response(status_code=400, content="Invalid JSON")
 
     # URL verification challenge (no signature check needed)
     if payload.get("type") == "url_verification":
-        return {"challenge": payload["challenge"]}
+        challenge = payload.get("challenge", "")
+        if isinstance(challenge, str) and challenge:
+            return {"challenge": challenge}
+        return Response(status_code=400, content="Invalid challenge")
 
     # Verify Slack signature for all other events
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "0")
@@ -181,6 +190,11 @@ async def _handle_apply(ids_str: str, thread_ts: str, user: str):
             text=f"\u2705 Applied {len(selected)} finding(s) to PR #{pr_number}. {pr_url}",
         )
         logger.info("findings_applied", pr=pr_number, count=len(selected), user=user)
+        remaining = [f for f in findings if f.id not in {s.id for s in selected}]
+        if remaining:
+            pr_store[pr_number] = (thread_ts, remaining)
+        else:
+            del pr_store[pr_number]
     except Exception as exc:
         await slack_client.post_thread_reply(
             thread_ts=thread_ts,
@@ -198,4 +212,8 @@ async def _handle_review_trigger(pr_number: int, user: str):
         )
         logger.info("manual_review_triggered", pr=pr_number, user=user)
     except Exception as exc:
+        await slack_client.post_message(
+            blocks=[],
+            text=f"\u274c Failed to trigger review for PR #{pr_number}: {exc}",
+        )
         logger.exception("review_trigger_failed", pr=pr_number)
