@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import BackgroundTasks, FastAPI, Request, Response
@@ -17,10 +18,18 @@ logger = structlog.get_logger()
 
 settings = load_settings()
 
-app = FastAPI(title="Claude PR Review Service")
-
 slack_client = SlackClient(bot_token=settings.slack_bot_token, channel=settings.slack_channel)
 gh_client = GitHubClient(token=settings.github_token, repo=settings.github_repo)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await slack_client.close()
+    await gh_client.close()
+
+
+app = FastAPI(title="Claude PR Review Service", lifespan=lifespan)
 
 # In-memory store: PR number -> (thread_ts, findings)
 pr_store: dict[int, tuple[str, list[Finding]]] = {}
