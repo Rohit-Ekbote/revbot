@@ -13,8 +13,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
+  pull-requests: read
 
 jobs:
   review:
@@ -46,61 +45,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUM="${{ steps.pr.outputs.number }}"
-
-          # Get PR title and body
           gh pr view "$PR_NUM" --json title,body --jq '.title' > /tmp/pr_title.txt
           gh pr view "$PR_NUM" --json title,body --jq '.body // ""' > /tmp/pr_body.txt
           gh pr view "$PR_NUM" --json author --jq '.author.login' > /tmp/pr_author.txt
-
-          # Get diff
           gh pr diff "$PR_NUM" > /tmp/pr_diff.txt
-
-          # Get changed file paths and detect stacks
           gh pr view "$PR_NUM" --json files --jq '.files[].path' > /tmp/changed_files.txt
 
           STACKS=""
-          if grep -q '^go/' /tmp/changed_files.txt 2>/dev/null; then
-            STACKS="$STACKS go"
-          fi
-          if grep -q '^backend-services-2/' /tmp/changed_files.txt 2>/dev/null; then
-            STACKS="$STACKS fastapi"
-          fi
-          if grep -q '^backend-services/' /tmp/changed_files.txt 2>/dev/null; then
-            STACKS="$STACKS django"
-          fi
-          STACKS=$(echo "$STACKS" | xargs)  # trim
+          if grep -q '^go/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS go"; fi
+          if grep -q '^backend-services-2/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS fastapi"; fi
+          if grep -q '^backend-services/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS django"; fi
+          STACKS=$(echo "$STACKS" | xargs)
 
           echo "stacks=$STACKS" >> "$GITHUB_OUTPUT"
-          echo "Detected stacks: $STACKS"
 
       - name: Build skill context
         run: |
-          # Always load root skill
           SKILL_FILE=".claude/skills/code-review.md"
           if [ -f "$SKILL_FILE" ]; then
             cat "$SKILL_FILE" > /tmp/combined_skill.md
             echo -e "\n---\n" >> /tmp/combined_skill.md
           else
-            echo "No root skill file found at $SKILL_FILE" > /tmp/combined_skill.md
+            echo "No root skill file found" > /tmp/combined_skill.md
             echo -e "\n---\n" >> /tmp/combined_skill.md
           fi
 
-          # Append stack-specific skills
           STACKS="${{ steps.meta.outputs.stacks }}"
           for stack in $STACKS; do
             case "$stack" in
-              go)
-                STACK_SKILL="go/.claude/skills/code-review.md"
-                ;;
-              fastapi)
-                STACK_SKILL="backend-services-2/.claude/skills/code-review.md"
-                ;;
-              django)
-                STACK_SKILL="backend-services/.claude/skills/code-review.md"
-                ;;
-              *)
-                continue
-                ;;
+              go) STACK_SKILL="go/.claude/skills/code-review.md" ;;
+              fastapi) STACK_SKILL="backend-services-2/.claude/skills/code-review.md" ;;
+              django) STACK_SKILL="backend-services/.claude/skills/code-review.md" ;;
+              *) continue ;;
             esac
             if [ -f "$STACK_SKILL" ]; then
               echo "## Stack: $stack" >> /tmp/combined_skill.md
@@ -116,7 +92,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Build the prompt from files
           PROMPT="$(cat /tmp/combined_skill.md)
 
           ---
@@ -152,58 +127,156 @@ jobs:
 
           claude --print "$PROMPT" > /tmp/raw_review.txt
 
-      - name: Store hidden findings on PR
+      - name: Build Slack messages
         env:
-          GH_TOKEN: ${{ github.token }}
+          PR_NUM: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+          STACKS: ${{ steps.meta.outputs.stacks }}
         run: |
-          PR_NUM="${{ steps.pr.outputs.number }}"
-          RUN_ID="${{ github.run_id }}"
-
-          # JSON-encode the raw review text
-          JSON_RAW=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" < /tmp/raw_review.txt)
-
-          COMMENT_BODY=$(cat <<EOF
-          <!-- claude-review-data
-          {"pr": ${PR_NUM}, "run_id": "${RUN_ID}", "raw": ${JSON_RAW}}
-          -->
-          EOF
-          )
-
-          gh pr comment "$PR_NUM" --body "$COMMENT_BODY"
-
-      - name: Notify local service
-        env:
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          LOCAL_SERVICE_URL: ${{ vars.LOCAL_SERVICE_URL }}
-        run: |
-          PR_NUM="${{ steps.pr.outputs.number }}"
-          STACKS="${{ steps.meta.outputs.stacks }}"
-          RUN_ID="${{ github.run_id }}"
-          REPO="${{ github.repository }}"
           PR_URL="https://github.com/${REPO}/pull/${PR_NUM}"
+          PR_TITLE=$(cat /tmp/pr_title.txt)
+          PR_AUTHOR=$(cat /tmp/pr_author.txt)
 
-          # Build JSON payload
-          PAYLOAD=$(python3 -c "
+          python3 << 'PYEOF'
+          import json, re, os
+
+          raw = open("/tmp/raw_review.txt").read()
+
+          # Parse findings
+          finding_re = re.compile(
+              r"FINDING_START\s*\n"
+              r"ID:\s*(?P<id>\d+)\s*\n"
+              r"SEVERITY:\s*(?P<severity>\w+)\s*\n"
+              r"FILE:\s*(?P<file>.+?)\s*\n"
+              r"LINE:\s*(?P<line>\d+)\s*\n"
+              r"TITLE:\s*(?P<title>.+?)\s*\n"
+              r"BODY:\s*(?P<body>.*?)\s*(?=FINDING_END)",
+              re.DOTALL,
+          )
+          summary_re = re.compile(r"SUMMARY_START\s*\n(?P<summary>.*?)\s*\nSUMMARY_END", re.DOTALL)
+
+          findings = []
+          for m in finding_re.finditer(raw):
+              findings.append({
+                  "id": int(m.group("id")),
+                  "severity": m.group("severity").strip(),
+                  "file": m.group("file").strip(),
+                  "line": int(m.group("line")),
+                  "title": m.group("title").strip(),
+                  "body": m.group("body").strip(),
+              })
+
+          sm = summary_re.search(raw)
+          summary = sm.group("summary").strip() if sm else ""
+
+          pr_num = int(os.environ["PR_NUM"])
+          repo = os.environ["REPO"]
+          pr_url = os.environ.get("PR_URL", f"https://github.com/{repo}/pull/{pr_num}")
+          pr_title = open("/tmp/pr_title.txt").read().strip()
+          pr_author = open("/tmp/pr_author.txt").read().strip()
+          stacks = os.environ.get("STACKS", "")
+
+          EMOJI = {
+              "BLOCKER": "\U0001f6a8",
+              "WARNING": "\u26a0\ufe0f",
+              "SUGGESTION": "\U0001f4a1",
+              "NIT": "\U0001f50d",
+          }
+
+          # Build header blocks (message 1 — thread parent)
+          header_blocks = [
+              {"type": "header", "text": {"type": "plain_text", "text": f"#{pr_num}: {pr_title}"[:150]}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}  |  *Author:* {pr_author}  |  *Stacks:* {stacks}\n<{pr_url}|View PR on GitHub>"}},
+          ]
+          if summary:
+              header_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:* {summary}"}})
+
+          counts = {}
+          for f in findings:
+              counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+          stats = "  ".join(
+              f'{EMOJI[s]} {counts[s]} {s.lower()}'
+              for s in ("BLOCKER", "WARNING", "SUGGESTION", "NIT")
+              if s in counts
+          )
+          if stats:
+              header_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": stats}]})
+
+          # Build findings text (message 2 — thread reply)
+          parts = []
+          for f in findings:
+              emoji = EMOJI.get(f["severity"], "")
+              loc = f'`{f["file"]}:{f["line"]}`' if f["file"] != "GENERAL" and f["line"] > 0 else "_General_"
+              parts.append(f'*{emoji} #{f["id"]} [{f["severity"]}]* {f["title"]}\n{loc}\n{f["body"]}')
+
+          parts.append("")
+          parts.append("Reply: `apply 1,3,5` to post selected findings to GitHub  |  `apply all` for all findings")
+
+          json_blob = json.dumps({"pr_number": pr_num, "repo": repo, "findings": findings})
+          parts.append(f"\n<!-- revbot-findings-data\n{json_blob}\n-->")
+
+          findings_text = "\n\n".join(parts)
+
+          # Write outputs for subsequent steps
+          with open("/tmp/header_payload.json", "w") as f:
+              json.dump({
+                  "channel": os.environ.get("SLACK_CHANNEL_FOR_PYTHON", ""),
+                  "blocks": header_blocks,
+                  "text": f"#{pr_num}: {pr_title}",
+              }, f)
+          with open("/tmp/findings_text.txt", "w") as f:
+              f.write(findings_text)
+
+          print(f"Parsed {len(findings)} findings")
+          PYEOF
+
+      - name: Post review header to Slack
+        id: slack-header
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: |
+          HEADER_PAYLOAD=$(python3 -c "
           import json
+          blocks = json.load(open('/tmp/header_payload.json'))['blocks']
+          text = json.load(open('/tmp/header_payload.json'))['text']
           print(json.dumps({
-              'pr_number': int('${PR_NUM}'),
-              'pr_title': open('/tmp/pr_title.txt').read().strip(),
-              'pr_url': '${PR_URL}',
-              'pr_author': open('/tmp/pr_author.txt').read().strip(),
-              'stacks': '${STACKS}',
-              'run_id': '${RUN_ID}',
-              'raw_review': open('/tmp/raw_review.txt').read(),
-              'repo': '${REPO}',
+              'channel': '${SLACK_CHANNEL}',
+              'blocks': blocks,
+              'text': text,
           }))
           ")
 
-          # Compute HMAC signature
-          SIG=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')
-
-          # POST to local service
-          curl -sf -X POST \
+          RESPONSE=$(curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
             -H "Content-Type: application/json" \
-            -H "X-Webhook-Secret: $SIG" \
-            -d "$PAYLOAD" \
-            "${LOCAL_SERVICE_URL}/review-complete" \
-            || echo "Warning: Could not reach local service at ${LOCAL_SERVICE_URL}"
+            -d "$HEADER_PAYLOAD")
+
+          # Extract thread_ts from response
+          THREAD_TS=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['ts'])")
+          echo "thread_ts=$THREAD_TS" >> "$GITHUB_OUTPUT"
+          echo "Posted header to Slack, thread_ts=$THREAD_TS"
+
+      - name: Post findings as thread reply
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: |
+          THREAD_TS="${{ steps.slack-header.outputs.thread_ts }}"
+
+          FINDINGS_PAYLOAD=$(python3 -c "
+          import json
+          text = open('/tmp/findings_text.txt').read()
+          print(json.dumps({
+              'channel': '${SLACK_CHANNEL}',
+              'thread_ts': '${THREAD_TS}',
+              'text': text,
+          }))
+          ")
+
+          curl -sf -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$FINDINGS_PAYLOAD"
+
+          echo "Posted findings to Slack thread"
