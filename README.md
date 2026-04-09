@@ -28,9 +28,7 @@ cp local-service/config.yml.example local-service/config.yml
 docker compose up
 ```
 
-The tunnel URL will be printed in the logs. Update:
-- `LOCAL_SERVICE_URL` in GitHub Actions variables
-- Request URL in Slack Event Subscriptions
+The tunnel URL will be printed in the logs. Update the Request URL in Slack Event Subscriptions.
 
 ## Quick Start
 
@@ -41,9 +39,8 @@ Add these secrets/variables in your repo settings:
 | Name | Type | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Secret | Anthropic API key |
-| `WEBHOOK_SECRET` | Secret | Shared HMAC secret |
-| `LOCAL_SERVICE_URL` | Variable | Cloudflared tunnel URL |
-| `REVIEW_MODE` | Variable | `manual` or `auto` |
+| `SLACK_BOT_TOKEN` | Secret | Slack bot token (`xoxb-...`) |
+| `SLACK_CHANNEL` | Secret | Slack channel ID |
 
 ### 2. Set up the local service
 

@@ -17,13 +17,13 @@ If you prefer Docker over a local Python install, you can skip Steps 3, 4, and 6
 ```bash
 # Create your config
 cp local-service/config.yml.example local-service/config.yml
-# Edit config.yml with your Slack, GitHub, and webhook values
+# Edit config.yml with your Slack and GitHub values
 
 # Start the service + tunnel
 docker compose up
 ```
 
-The container runs both the FastAPI service and cloudflared tunnel. The tunnel URL is printed in the logs — use it for the `LOCAL_SERVICE_URL` GitHub Actions variable and the Slack Event Subscriptions request URL.
+The container runs both the FastAPI service and cloudflared tunnel. The tunnel URL is printed in the logs — use it for the Slack Event Subscriptions request URL.
 
 You still need to complete Step 1 (Slack App), Step 2 (GitHub Actions), and Step 5 (Slack Event Subscriptions) manually.
 
@@ -69,14 +69,8 @@ In your GitHub repository:
    | Secret | Value |
    |---|---|
    | `ANTHROPIC_API_KEY` | Your Anthropic API key |
-   | `WEBHOOK_SECRET` | A random string (generate with `openssl rand -hex 32`) |
-
-3. Add these **variables**:
-
-   | Variable | Value |
-   |---|---|
-   | `LOCAL_SERVICE_URL` | Placeholder for now — you'll update this in Step 4 |
-   | `REVIEW_MODE` | `manual` (findings go to Slack for approval) or `auto` (posted directly to PR) |
+   | `SLACK_BOT_TOKEN` | The bot token (`xoxb-...`) from Step 1 |
+   | `SLACK_CHANNEL` | The channel ID from Step 1 |
 
 4. (Optional) Protect the workflow file by adding a `CODEOWNERS` file at the repo root:
 
@@ -120,12 +114,6 @@ slack_bot_token: "xoxb-your-bot-token"
 slack_signing_secret: "your-signing-secret"
 slack_channel: "C01234567"  # Channel ID from Step 1
 
-# Security (must match WEBHOOK_SECRET from Step 2)
-webhook_secret: "your-random-string-from-step-2"
-
-# Review mode: manual | auto
-review_mode: "manual"
-
 # Your Slack user ID (find it in your Slack profile > three dots > Copy member ID)
 allowed_slack_users:
   - "U01234567"
@@ -158,11 +146,7 @@ You'll see output like:
 +--------------------------------------------------------------------------------------------+
 ```
 
-Copy this URL. You need to update **two places**:
-
-1. **GitHub Actions variable:** Go to your repo Settings > Secrets and variables > Actions > Variables, and set `LOCAL_SERVICE_URL` to the tunnel URL (e.g., `https://abc-def-ghi.trycloudflare.com`)
-
-2. **Slack Event Subscriptions** (next step)
+Copy this URL. You'll use it for Slack Event Subscriptions in the next step.
 
 > **Note:** This URL changes every time you restart cloudflared. For a stable URL, create a free Cloudflare account and set up a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
@@ -242,7 +226,6 @@ Go back to your Slack app's **Event Subscriptions** page. The Request URL should
 ### Slack doesn't show the review
 
 - Verify the local service is running and reachable: `curl https://your-tunnel-url/health`
-- Check that `LOCAL_SERVICE_URL` in GitHub Actions variables matches your current tunnel URL
 - Check the local service logs for errors
 
 ### "apply" command doesn't work
@@ -259,9 +242,7 @@ Go back to your Slack app's **Event Subscriptions** page. The Request URL should
 
 ### Tunnel URL changed
 
-After restarting cloudflared, update both:
-1. `LOCAL_SERVICE_URL` in GitHub Actions variables
-2. Request URL in Slack Event Subscriptions
+After restarting cloudflared, update the Request URL in Slack Event Subscriptions.
 
 ## Skill Files (Optional)
 
