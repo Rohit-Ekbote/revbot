@@ -106,3 +106,52 @@ def test_format_slack_blocks_includes_footer_instructions(sample_review_text: st
     )
     footer_text = str(blocks[-1])
     assert "apply" in footer_text.lower()
+
+
+from parser import format_thread_header_blocks, format_findings_data_message
+
+
+def test_format_thread_header_blocks(sample_review_text: str):
+    findings, summary = parse_review(sample_review_text)
+    blocks = format_thread_header_blocks(
+        pr_number=42,
+        pr_title="Add auth middleware",
+        pr_url="https://github.com/org/repo/pull/42",
+        pr_author="dev-user",
+        repo="org/repo",
+        stacks="go fastapi",
+        summary=summary,
+        findings=findings,
+    )
+    assert isinstance(blocks, list)
+    header_text = blocks[0]["text"]["text"]
+    assert "#42" in header_text
+    all_text = str(blocks)
+    assert "dev-user" in all_text
+    assert "Summary" in all_text
+
+
+def test_format_findings_data_message(sample_review_text: str):
+    findings, summary = parse_review(sample_review_text)
+    text = format_findings_data_message(
+        findings=findings,
+        pr_number=42,
+        repo="org/repo",
+    )
+    assert "<!-- revbot-findings-data" in text
+    assert '"pr_number": 42' in text
+    assert "SQL injection" in text
+    assert "apply" in text.lower()
+
+
+def test_format_findings_data_message_json_is_parseable(sample_review_text: str):
+    import json, re
+    findings, _ = parse_review(sample_review_text)
+    text = format_findings_data_message(findings=findings, pr_number=42, repo="org/repo")
+    match = re.search(r"<!-- revbot-findings-data\n(.*?)\n-->", text, re.DOTALL)
+    assert match is not None
+    data = json.loads(match.group(1))
+    assert data["pr_number"] == 42
+    assert len(data["findings"]) == 4
+    assert data["findings"][0]["id"] == 1
+    assert data["findings"][0]["severity"] == "BLOCKER"
