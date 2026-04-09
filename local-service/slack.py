@@ -75,5 +75,20 @@ class SlackClient:
             raise RuntimeError(f"Slack API error: {data.get('error')}")
         return data["ts"]
 
+    async def read_thread_replies(self, *, thread_ts: str) -> list[dict]:
+        """Read all replies in a thread. Returns list of message dicts."""
+        resp = await self._http.get(
+            "/conversations.replies",
+            params={
+                "channel": self._channel,
+                "ts": thread_ts,
+                "limit": 100,
+            },
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Slack API error: {data.get('error')}")
+        return data.get("messages", [])
+
     async def close(self) -> None:
         await self._http.aclose()

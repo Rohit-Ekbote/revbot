@@ -86,3 +86,31 @@ class TestSlackClient:
         )
         with pytest.raises(RuntimeError, match="channel_not_found"):
             await slack_client.post_message(blocks=[])
+
+
+class TestSlackClientReadThread:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_read_thread_replies(self, slack_client: SlackClient):
+        route = respx.get("https://slack.com/api/conversations.replies").mock(
+            return_value=httpx.Response(200, json={
+                "ok": True,
+                "messages": [
+                    {"ts": "1234.0001", "text": "Thread parent"},
+                    {"ts": "1234.0002", "text": "Finding reply with <!-- revbot-findings-data\n{}\n-->"},
+                ],
+            })
+        )
+        messages = await slack_client.read_thread_replies(thread_ts="1234.0001")
+        assert len(messages) == 2
+        assert "Thread parent" in messages[0]["text"]
+        assert route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_read_thread_replies_api_error(self, slack_client: SlackClient):
+        respx.get("https://slack.com/api/conversations.replies").mock(
+            return_value=httpx.Response(200, json={"ok": False, "error": "thread_not_found"})
+        )
+        with pytest.raises(RuntimeError, match="thread_not_found"):
+            await slack_client.read_thread_replies(thread_ts="1234.0001")
