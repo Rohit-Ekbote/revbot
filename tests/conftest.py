@@ -18,8 +18,6 @@ def settings() -> Settings:
         slack_bot_token="xoxb-test-token",
         slack_signing_secret="test_signing_secret",
         slack_channel="C01234567",
-        webhook_secret="test_webhook_secret",
-        review_mode="manual",
         allowed_slack_users=["U01234567"],
     )
 

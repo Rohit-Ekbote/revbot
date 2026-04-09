@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import re
 from contextlib import asynccontextmanager
@@ -11,7 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from config import load_settings
 from github import GitHubClient
-from parser import Finding, parse_review, format_slack_blocks
+from parser import Finding
 from slack import SlackClient, verify_slack_signature
 
 logger = structlog.get_logger()
@@ -20,6 +18,10 @@ settings = load_settings()
 
 slack_client = SlackClient(bot_token=settings.slack_bot_token, channel=settings.slack_channel)
 gh_client = GitHubClient(token=settings.github_token, repo=settings.github_repo)
+
+APPLY_RE = re.compile(r"^apply\s+(.+)$", re.IGNORECASE)
+REVIEW_RE = re.compile(r"^review\s+pr\s*#?\s*(\d+)$", re.IGNORECASE)
+FINDINGS_DATA_RE = re.compile(r"<!-- revbot-findings-data\n(.*?)\n-->", re.DOTALL)
 
 
 @asynccontextmanager
@@ -31,69 +33,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Claude PR Review Service", lifespan=lifespan)
 
-# In-memory store: PR number -> (thread_ts, findings)
-pr_store: dict[int, tuple[str, list[Finding]]] = {}
-
-APPLY_RE = re.compile(r"^apply\s+(.+)$", re.IGNORECASE)
-REVIEW_RE = re.compile(r"^review\s+pr\s*#?\s*(\d+)$", re.IGNORECASE)
-
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "tracked_prs": list(pr_store.keys())}
-
-
-@app.post("/review-complete")
-async def review_complete(request: Request, background_tasks: BackgroundTasks):
-    body = await request.body()
-    sig = request.headers.get("X-Webhook-Secret", "")
-    expected = hmac.new(settings.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        logger.warning("review_complete_auth_failed")
-        return Response(status_code=401, content="Unauthorized")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return Response(status_code=400, content="Invalid JSON")
-    logger.info("review_complete_received", pr=payload["pr_number"])
-
-    findings, summary = parse_review(payload["raw_review"])
-
-    if settings.review_mode == "auto":
-        background_tasks.add_task(_auto_apply, payload, findings)
-        return {"status": "queued", "mode": "auto"}
-
-    background_tasks.add_task(_post_to_slack, payload, findings, summary)
-    return {"status": "queued", "mode": "manual"}
-
-
-async def _post_to_slack(payload: dict, findings: list[Finding], summary: str):
-    try:
-        blocks = format_slack_blocks(
-            findings=findings,
-            summary=summary,
-            pr_number=payload["pr_number"],
-            pr_title=payload["pr_title"],
-            pr_url=payload["pr_url"],
-            pr_author=payload["pr_author"],
-            repo=payload["repo"],
-            stacks=payload["stacks"],
-        )
-        thread_ts = await slack_client.post_message(blocks=blocks, text=f"Review: #{payload['pr_number']} {payload['pr_title']}")
-        pr_store[payload["pr_number"]] = (thread_ts, findings)
-        logger.info("slack_thread_created", pr=payload["pr_number"], thread_ts=thread_ts)
-    except Exception:
-        logger.exception("slack_post_failed", pr=payload["pr_number"])
-
-
-async def _auto_apply(payload: dict, findings: list[Finding]):
-    try:
-        for finding in findings:
-            await gh_client.post_review_comment(pr_number=payload["pr_number"], finding=finding)
-        logger.info("auto_applied", pr=payload["pr_number"], count=len(findings))
-    except Exception:
-        logger.exception("auto_apply_failed", pr=payload["pr_number"])
+    return {"status": "ok"}
 
 
 @app.post("/slack/events")
@@ -104,14 +47,14 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
     except json.JSONDecodeError:
         return Response(status_code=400, content="Invalid JSON")
 
-    # URL verification challenge (no signature check needed)
+    # URL verification challenge
     if payload.get("type") == "url_verification":
         challenge = payload.get("challenge", "")
         if isinstance(challenge, str) and challenge:
             return {"challenge": challenge}
         return Response(status_code=400, content="Invalid challenge")
 
-    # Verify Slack signature for all other events
+    # Verify Slack signature
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "0")
     signature = request.headers.get("X-Slack-Signature", "")
     if not verify_slack_signature(
@@ -129,7 +72,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
     user = event.get("user", "")
     if settings.allowed_slack_users and user not in settings.allowed_slack_users:
-        logger.info("slack_user_not_allowed", user=user)
+        logger.warning("slack_user_not_allowed", user=user)
         return {"ok": True}
 
     text = event.get("text", "").strip()
@@ -152,18 +95,40 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 
 async def _handle_apply(ids_str: str, thread_ts: str, user: str):
-    # Find PR by thread_ts
-    pr_number = None
-    findings = []
-    for pr, (ts, f) in pr_store.items():
-        if ts == thread_ts:
-            pr_number = pr
-            findings = f
+    try:
+        messages = await slack_client.read_thread_replies(thread_ts=thread_ts)
+    except Exception:
+        logger.exception("apply_read_thread_failed", thread_ts=thread_ts)
+        return
+
+    # Find the message with the findings data blob
+    findings_data = None
+    for msg in messages:
+        match = FINDINGS_DATA_RE.search(msg.get("text", ""))
+        if match:
+            findings_data = json.loads(match.group(1))
             break
 
-    if pr_number is None:
-        logger.warning("apply_no_matching_thread", thread_ts=thread_ts)
+    if findings_data is None:
+        await slack_client.post_thread_reply(
+            thread_ts=thread_ts,
+            text="\u274c No review findings found in this thread.",
+        )
         return
+
+    pr_number = findings_data["pr_number"]
+    repo = findings_data["repo"]
+    findings = [
+        Finding(
+            id=f["id"],
+            severity=f["severity"],
+            file=f["file"],
+            line=f["line"],
+            title=f["title"],
+            body=f["body"],
+        )
+        for f in findings_data["findings"]
+    ]
 
     # Parse requested IDs
     if ids_str.strip().lower() == "all":
@@ -193,17 +158,12 @@ async def _handle_apply(ids_str: str, thread_ts: str, user: str):
     try:
         for finding in selected:
             await gh_client.post_review_comment(pr_number=pr_number, finding=finding)
-        pr_url = f"https://github.com/{settings.github_repo}/pull/{pr_number}"
+        pr_url = f"https://github.com/{repo}/pull/{pr_number}"
         await slack_client.post_thread_reply(
             thread_ts=thread_ts,
             text=f"\u2705 Applied {len(selected)} finding(s) to PR #{pr_number}. {pr_url}",
         )
         logger.info("findings_applied", pr=pr_number, count=len(selected), user=user)
-        remaining = [f for f in findings if f.id not in {s.id for s in selected}]
-        if remaining:
-            pr_store[pr_number] = (thread_ts, remaining)
-        else:
-            del pr_store[pr_number]
     except Exception as exc:
         await slack_client.post_thread_reply(
             thread_ts=thread_ts,

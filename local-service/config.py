@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import yaml
 from pathlib import Path
-from typing import Literal
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -15,9 +14,6 @@ class Settings(BaseSettings):
     slack_signing_secret: str
     slack_channel: str
 
-    webhook_secret: str
-
-    review_mode: Literal["manual", "auto"] = "manual"
     allowed_slack_users: list[str] = Field(default_factory=list)
 
     model_config = {"env_prefix": "", "case_sensitive": False}
