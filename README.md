@@ -7,6 +7,10 @@ Automated AI-powered PR code review using Claude. Reviews PRs targeting `main`, 
 - **GitHub Action** (`.github/workflows/claude-pr-review.yml`) — triggers on PR events, invokes Claude, posts findings
 - **Local Service** (`local-service/`) — FastAPI app that bridges Slack and GitHub for selective comment application
 
+## Setup
+
+See **[docs/setup-guide.md](docs/setup-guide.md)** for the complete step-by-step setup guide covering Slack app creation, GitHub Actions configuration, cloudflared tunnel, and end-to-end verification.
+
 ## Quick Start
 
 ### 1. Configure GitHub Actions
