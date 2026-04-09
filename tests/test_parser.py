@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from parser import Finding, parse_review, format_slack_blocks
+from parser import Finding, parse_review
 
 
 def test_parse_review_extracts_all_findings(sample_review_text: str):
@@ -67,45 +67,6 @@ def test_parse_review_multiline_body():
     assert len(findings) == 1
     assert "Try/except" in findings[0].body
     assert "HTTP error responses" in findings[0].body
-
-
-def test_format_slack_blocks_contains_findings(sample_review_text: str):
-    findings, summary = parse_review(sample_review_text)
-    blocks = format_slack_blocks(
-        findings=findings,
-        summary=summary,
-        pr_number=42,
-        pr_title="Add auth middleware",
-        pr_url="https://github.com/org/repo/pull/42",
-        pr_author="dev-user",
-        repo="org/repo",
-        stacks="go fastapi",
-    )
-    # Must be a list of Block Kit blocks
-    assert isinstance(blocks, list)
-    assert len(blocks) > 0
-    # Header block should mention PR number
-    header_text = blocks[0]["text"]["text"]
-    assert "#42" in header_text
-    # Should contain all severity emojis present in findings
-    all_text = str(blocks)
-    assert "BLOCKER" in all_text or "\U0001f6a8" in all_text
-
-
-def test_format_slack_blocks_includes_footer_instructions(sample_review_text: str):
-    findings, summary = parse_review(sample_review_text)
-    blocks = format_slack_blocks(
-        findings=findings,
-        summary=summary,
-        pr_number=42,
-        pr_title="Test",
-        pr_url="https://github.com/org/repo/pull/42",
-        pr_author="dev",
-        repo="org/repo",
-        stacks="go",
-    )
-    footer_text = str(blocks[-1])
-    assert "apply" in footer_text.lower()
 
 
 from parser import format_thread_header_blocks, format_findings_data_message
