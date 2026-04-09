@@ -1,66 +1,65 @@
 # revbot
 
-Automated AI-powered PR code review using Claude. Reviews PRs targeting `main`, posts structured findings to Slack, and lets the reviewer selectively apply findings back to GitHub.
+Automated AI-powered PR code review using Claude. Reviews PRs targeting `main` and posts structured findings to Slack.
 
-## Components
+## How It Works
 
-- **GitHub Action** (`.github/workflows/claude-pr-review.yml`) — triggers on PR events, invokes Claude, posts findings
-- **Local Service** (`local-service/`) — FastAPI app that bridges Slack and GitHub for selective comment application
+1. A PR is opened or updated on `main`
+2. GitHub Action invokes Claude to review the diff
+3. Findings are posted to a Slack channel as a thread (header + findings)
+
+That's it. No extra services, no setup beyond adding the workflow and one secret.
 
 ## Setup
 
-See **[docs/setup-guide.md](docs/setup-guide.md)** for the complete step-by-step setup guide covering Slack app creation, GitHub Actions configuration, cloudflared tunnel, and end-to-end verification.
+### 1. Add the workflow
 
-## Docker
+Copy `.github/workflows/claude-pr-review.yml` to your repository.
 
-The simplest way to run revbot — no Python or cloudflared install needed.
+### 2. Configure secrets
 
-### 1. Configure
-
-```bash
-cp local-service/config.yml.example local-service/config.yml
-# Edit config.yml with your values (see docs/setup-guide.md)
-```
-
-### 2. Run
-
-```bash
-docker compose up
-```
-
-The tunnel URL will be printed in the logs. Update the Request URL in Slack Event Subscriptions.
-
-## Quick Start
-
-### 1. Configure GitHub Actions
-
-Add these secrets/variables in your repo settings:
+Your repo likely already has `SLACK_BOT_TOKEN` (used by other workflows). You only need to add:
 
 | Name | Type | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Secret | Anthropic API key |
-| `SLACK_BOT_TOKEN` | Secret | Slack bot token (`xoxb-...`) |
-| `SLACK_CHANNEL` | Secret | Slack channel ID |
+| `ANTHROPIC_API_KEY` | Secret | Anthropic API key for Claude |
 
-### 2. Set up the local service
+The workflow uses `SLACK_BOT_TOKEN` (existing org secret) and posts to `#notifications` by default.
 
-```bash
-cd local-service
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp config.yml.example config.yml  # fill in your values
-```
+### 3. (Optional) Change the Slack channel
 
-### 3. Start the tunnel and service
+To post to a different channel, add a repository variable:
 
-```bash
-cloudflared tunnel --url http://localhost:8000
-# In another terminal:
-cd local-service && source .venv/bin/activate
-uvicorn main:app --port 8000 --reload
-```
+| Name | Type | Description |
+|---|---|---|
+| `SLACK_CHANNEL` | Variable | Channel name or ID (default: `#notifications`) |
 
-### 4. Slack commands
+### 4. (Optional) Add review skill files
+
+Create skill files in the repo being reviewed to give Claude domain-specific context:
+
+| File | Purpose |
+|---|---|
+| `.claude/skills/code-review.md` | Root skill — always loaded |
+| `go/.claude/skills/code-review.md` | Go-specific review rules |
+| `backend-services-2/.claude/skills/code-review.md` | FastAPI-specific review rules |
+| `backend-services/.claude/skills/code-review.md` | Django-specific review rules |
+
+### 5. Manual trigger
+
+Trigger a review for any PR via the Actions tab: **Claude PR Review** > **Run workflow** > enter PR number.
+
+## Advanced: Interactive Apply Mode
+
+If you want to selectively apply review findings to GitHub PRs from Slack (via `apply 1,3` commands), you can run the optional local service. This requires:
+
+- The existing Slack App to have **Event Subscriptions** enabled
+- A local FastAPI service + cloudflared tunnel on your machine
+- Docker (recommended) or Python 3.11+
+
+See **[docs/setup-guide.md](docs/setup-guide.md)** for the full interactive mode setup.
+
+### Slack Commands (Interactive Mode Only)
 
 | Command | Where | Action |
 |---|---|---|
