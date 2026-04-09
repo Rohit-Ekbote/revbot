@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 
 import httpx
 
 from parser import Finding, SEVERITY_EMOJI
 
 GITHUB_API = "https://api.github.com"
-HIDDEN_COMMENT_RE = re.compile(r"<!-- claude-review-data\n(.*?)\n-->", re.DOTALL)
 BOT_TAG = "<!-- claude-review-bot -->"
 
 
@@ -24,20 +22,6 @@ class GitHubClient:
             },
             timeout=15.0,
         )
-
-    async def read_hidden_findings(self, *, pr_number: int) -> str:
-        """Read raw review text from the hidden HTML comment on the PR."""
-        resp = await self._http.get(
-            f"/repos/{self._repo}/issues/{pr_number}/comments",
-            params={"per_page": 100},
-        )
-        resp.raise_for_status()
-        for comment in resp.json():
-            match = HIDDEN_COMMENT_RE.search(comment.get("body", ""))
-            if match:
-                data = json.loads(match.group(1))
-                return data.get("raw", "")
-        return ""
 
     async def post_review_comment(self, *, pr_number: int, finding: Finding) -> None:
         """Post a finding as a PR review comment (file-specific) or issue comment (general)."""

@@ -15,38 +15,6 @@ async def gh_client(settings) -> GitHubClient:
     await client.close()
 
 
-class TestReadHiddenFindings:
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_extracts_findings_from_hidden_comment(self, gh_client: GitHubClient):
-        comments = [
-            {"id": 1, "body": "Normal comment"},
-            {
-                "id": 2,
-                "body": (
-                    "<!-- claude-review-data\n"
-                    '{"pr": 42, "run_id": "123", "raw": "FINDING_START\\nID: 1\\nSEVERITY: NIT\\nFILE: GENERAL\\nLINE: 0\\nTITLE: Test\\nBODY: Details\\nFINDING_END\\n\\nSUMMARY_START\\nOK\\nSUMMARY_END"}\n'
-                    "-->"
-                ),
-            },
-        ]
-        respx.get(f"https://api.github.com/repos/testorg/testrepo/issues/42/comments").mock(
-            return_value=httpx.Response(200, json=comments)
-        )
-        raw = await gh_client.read_hidden_findings(pr_number=42)
-        assert "FINDING_START" in raw
-        assert "Test" in raw
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_returns_empty_when_no_hidden_comment(self, gh_client: GitHubClient):
-        respx.get(f"https://api.github.com/repos/testorg/testrepo/issues/42/comments").mock(
-            return_value=httpx.Response(200, json=[{"id": 1, "body": "Normal comment"}])
-        )
-        raw = await gh_client.read_hidden_findings(pr_number=42)
-        assert raw == ""
-
-
 class TestPostReviewComment:
     @respx.mock
     @pytest.mark.asyncio
