@@ -10,6 +10,23 @@ Complete step-by-step guide to set up the Claude PR Review System. This covers c
 - macOS with Homebrew (for cloudflared)
 - Python 3.11+
 
+## Quick Start with Docker
+
+If you prefer Docker over a local Python install, you can skip Steps 3, 4, and 6 and use Docker instead:
+
+```bash
+# Create your config
+cp local-service/config.yml.example local-service/config.yml
+# Edit config.yml with your Slack, GitHub, and webhook values
+
+# Start the service + tunnel
+docker compose up
+```
+
+The container runs both the FastAPI service and cloudflared tunnel. The tunnel URL is printed in the logs — use it for the `LOCAL_SERVICE_URL` GitHub Actions variable and the Slack Event Subscriptions request URL.
+
+You still need to complete Step 1 (Slack App), Step 2 (GitHub Actions), and Step 5 (Slack Event Subscriptions) manually.
+
 ## Step 1: Create the Slack App
 
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) and click **Create New App** > **From scratch**

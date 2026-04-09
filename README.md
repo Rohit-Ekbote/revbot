@@ -11,6 +11,27 @@ Automated AI-powered PR code review using Claude. Reviews PRs targeting `main`, 
 
 See **[docs/setup-guide.md](docs/setup-guide.md)** for the complete step-by-step setup guide covering Slack app creation, GitHub Actions configuration, cloudflared tunnel, and end-to-end verification.
 
+## Docker
+
+The simplest way to run revbot — no Python or cloudflared install needed.
+
+### 1. Configure
+
+```bash
+cp local-service/config.yml.example local-service/config.yml
+# Edit config.yml with your values (see docs/setup-guide.md)
+```
+
+### 2. Run
+
+```bash
+docker compose up
+```
+
+The tunnel URL will be printed in the logs. Update:
+- `LOCAL_SERVICE_URL` in GitHub Actions variables
+- Request URL in Slack Event Subscriptions
+
 ## Quick Start
 
 ### 1. Configure GitHub Actions

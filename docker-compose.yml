@@ -1,0 +1,10 @@
+services:
+  revbot:
+    build:
+      context: ./local-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./local-service/config.yml:/app/config.yml:ro
+    restart: unless-stopped
