@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cleanup() {
+  kill "$CLOUDFLARED_PID" 2>/dev/null || true
+  wait "$CLOUDFLARED_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # Start cloudflared tunnel in background
 cloudflared tunnel --url http://localhost:8000 --no-autoupdate 2>&1 | \
   while IFS= read -r line; do
@@ -20,9 +26,7 @@ cloudflared tunnel --url http://localhost:8000 --no-autoupdate 2>&1 | \
       echo ""
     fi
   done &
-
-# Give cloudflared a moment to bind
-sleep 2
+CLOUDFLARED_PID=$!
 
 # Start uvicorn in foreground
 exec uvicorn main:app --host 0.0.0.0 --port 8000
