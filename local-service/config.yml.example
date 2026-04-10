@@ -1,0 +1,11 @@
+# GitHub
+github_token: "ghp_your_token_here"
+github_repo: "org/repo"
+
+# Slack
+slack_bot_token: "xoxb-your-token-here"
+slack_signing_secret: "your-signing-secret"
+slack_channel: "C01234567"
+
+# Slack user IDs allowed to use apply/review commands (empty = all users)
+allowed_slack_users: []
