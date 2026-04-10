@@ -45,45 +45,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUM="${{ steps.pr.outputs.number }}"
-          gh pr view "$PR_NUM" --json title,body --jq '.title' > /tmp/pr_title.txt
-          gh pr view "$PR_NUM" --json title,body --jq '.body // ""' > /tmp/pr_body.txt
+          gh pr view "$PR_NUM" --json title --jq '.title' > /tmp/pr_title.txt
           gh pr view "$PR_NUM" --json author --jq '.author.login' > /tmp/pr_author.txt
-          gh pr diff "$PR_NUM" > /tmp/pr_diff.txt
-          gh pr view "$PR_NUM" --json files --jq '.files[].path' > /tmp/changed_files.txt
-
-          STACKS=""
-          if grep -q '^go/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS go"; fi
-          if grep -q '^backend-services-2/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS fastapi"; fi
-          if grep -q '^backend-services/' /tmp/changed_files.txt 2>/dev/null; then STACKS="$STACKS django"; fi
-          STACKS=$(echo "$STACKS" | xargs)
-
-          echo "stacks=$STACKS" >> "$GITHUB_OUTPUT"
-
-      - name: Build skill context
-        run: |
-          SKILL_FILE=".claude/skills/code-review.md"
-          if [ -f "$SKILL_FILE" ]; then
-            cat "$SKILL_FILE" > /tmp/combined_skill.md
-            echo -e "\n---\n" >> /tmp/combined_skill.md
-          else
-            echo "No root skill file found" > /tmp/combined_skill.md
-            echo -e "\n---\n" >> /tmp/combined_skill.md
-          fi
-
-          STACKS="${{ steps.meta.outputs.stacks }}"
-          for stack in $STACKS; do
-            case "$stack" in
-              go) STACK_SKILL="go/.claude/skills/code-review.md" ;;
-              fastapi) STACK_SKILL="backend-services-2/.claude/skills/code-review.md" ;;
-              django) STACK_SKILL="backend-services/.claude/skills/code-review.md" ;;
-              *) continue ;;
-            esac
-            if [ -f "$STACK_SKILL" ]; then
-              echo "## Stack: $stack" >> /tmp/combined_skill.md
-              cat "$STACK_SKILL" >> /tmp/combined_skill.md
-              echo -e "\n---\n" >> /tmp/combined_skill.md
-            fi
-          done
 
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
@@ -92,22 +55,11 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          PROMPT="$(cat /tmp/combined_skill.md)
+          PR_NUM="${{ steps.pr.outputs.number }}"
 
-          ---
+          claude --print "Review ${PR_NUM}
 
-          ## PR Context
-          Title: $(cat /tmp/pr_title.txt)
-          Description: $(cat /tmp/pr_body.txt)
-
-          ## Diff
-          $(cat /tmp/pr_diff.txt)
-
-          ---
-
-          ## Instructions
-          Perform a structured review. For each finding output EXACTLY this format
-          (do not deviate — it will be parsed programmatically):
+          After your review, output findings in EXACTLY this format (parsed programmatically):
 
           FINDING_START
           ID: <number starting from 1>
@@ -118,31 +70,23 @@ jobs:
           BODY: <detailed explanation, can be multiline>
           FINDING_END
 
-          After all findings, add:
+          After all findings:
           SUMMARY_START
           <2-3 sentence overall assessment>
           SUMMARY_END
 
-          Do not add any text outside of FINDING_START/END and SUMMARY_START/END blocks."
-
-          claude --print "$PROMPT" > /tmp/raw_review.txt
+          No text outside FINDING_START/END and SUMMARY_START/END blocks." > /tmp/raw_review.txt
 
       - name: Build Slack messages
         env:
           PR_NUM: ${{ steps.pr.outputs.number }}
           REPO: ${{ github.repository }}
-          STACKS: ${{ steps.meta.outputs.stacks }}
         run: |
-          PR_URL="https://github.com/${REPO}/pull/${PR_NUM}"
-          PR_TITLE=$(cat /tmp/pr_title.txt)
-          PR_AUTHOR=$(cat /tmp/pr_author.txt)
-
           python3 << 'PYEOF'
           import json, re, os
 
           raw = open("/tmp/raw_review.txt").read()
 
-          # Parse findings
           finding_re = re.compile(
               r"FINDING_START\s*\n"
               r"ID:\s*(?P<id>\d+)\s*\n"
@@ -171,10 +115,9 @@ jobs:
 
           pr_num = int(os.environ["PR_NUM"])
           repo = os.environ["REPO"]
-          pr_url = os.environ.get("PR_URL", f"https://github.com/{repo}/pull/{pr_num}")
+          pr_url = f"https://github.com/{repo}/pull/{pr_num}"
           pr_title = open("/tmp/pr_title.txt").read().strip()
           pr_author = open("/tmp/pr_author.txt").read().strip()
-          stacks = os.environ.get("STACKS", "")
 
           EMOJI = {
               "BLOCKER": "\U0001f6a8",
@@ -183,10 +126,10 @@ jobs:
               "NIT": "\U0001f50d",
           }
 
-          # Build header blocks (message 1 — thread parent)
+          # Header blocks (thread parent)
           header_blocks = [
               {"type": "header", "text": {"type": "plain_text", "text": f"#{pr_num}: {pr_title}"[:150]}},
-              {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}  |  *Author:* {pr_author}  |  *Stacks:* {stacks}\n<{pr_url}|View PR on GitHub>"}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": f"*Author:* {pr_author}  |  <{pr_url}|View PR on GitHub>"}},
           ]
           if summary:
               header_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:* {summary}"}})
@@ -202,7 +145,7 @@ jobs:
           if stats:
               header_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": stats}]})
 
-          # Build findings text (message 2 — thread reply)
+          # Findings text (thread reply)
           parts = []
           for f in findings:
               emoji = EMOJI.get(f["severity"], "")
@@ -212,13 +155,10 @@ jobs:
           json_blob = json.dumps({"pr_number": pr_num, "repo": repo, "findings": findings})
           parts.append(f"\n<!-- revbot-findings-data\n{json_blob}\n-->")
 
-          findings_text = "\n\n".join(parts)
-
-          # Write outputs for subsequent steps
           with open("/tmp/header_payload.json", "w") as f:
               json.dump({"blocks": header_blocks}, f)
           with open("/tmp/findings_payload.json", "w") as f:
-              json.dump({"text": findings_text}, f)
+              json.dump({"text": "\n\n".join(parts)}, f)
 
           print(f"Parsed {len(findings)} findings")
           PYEOF
